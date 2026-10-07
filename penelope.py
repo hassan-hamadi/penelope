@@ -874,7 +874,7 @@ class BetterCMD:
 			return None
 
 	@staticmethod
-	def complete_path(line, begidx, endidx, lister, expand=lambda p: p, windows=False):
+	def complete_path(line, begidx, endidx, lister, expand=lambda p: p, windows=False, close_unquoted_dir_quote=False):
 		if windows:
 			arg_start, quoted, i = 0, False, 0
 			while i < endidx:
@@ -897,7 +897,7 @@ class BetterCMD:
 				if quoted:
 					rendered = m if is_dir else m + '"'
 				elif ' ' in m:
-					rendered = ('"' + m) if is_dir else ('"' + m + '"')
+					rendered = ('"' + m) if is_dir and not close_unquoted_dir_quote else ('"' + m + '"')
 				else:
 					rendered = m
 				results.append(rendered[cut:])
@@ -3038,6 +3038,18 @@ class Session:
 
 		return []
 
+	def get_remote_command_completion(self, text):
+		if not text:
+			return []
+		pattern = text.replace("'", "''") + '*'
+		result = self.exec(
+			f"Get-Command -Name '{pattern}' -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name",
+			value=True
+		)
+		if not isinstance(result, str):
+			return []
+		return list(dict.fromkeys(name for name in result.splitlines() if name.lower().startswith(text.lower())))
+
 	def get_tty(self, silent=False):
 		response = self.exec("tty", agent_typing=True, value=True) # TODO check binary
 		if not (isinstance(response, str) and response.startswith('/')):
@@ -3957,10 +3969,29 @@ class Session:
 		elif self.OS == 'Windows': # TODO
 			pass
 
+	def complete_remote_path(self, text, state):
+		if state == 0:
+			line = readline.get_line_buffer()
+			begidx = readline.get_begidx()
+			endidx = readline.get_endidx()
+			if line[:begidx].strip():
+				self.completion_matches = BetterCMD.complete_path(
+					line, begidx, endidx, self.get_remote_completion, windows=True, close_unquoted_dir_quote=True
+				)
+			else:
+				self.completion_matches = self.get_remote_command_completion(text)
+		try:
+			return self.completion_matches[state]
+		except IndexError:
+			return None
+
 	def readline_loop(self):
 		while core.attached_session == self:
 			try:
-				cmd = input("\033[s\033[u", self.histfile, options.histlength, None, "\t") # TODO
+				completer = self.complete_remote_path if readline and self.OS == 'Windows' and self.subtype == 'psh' else None
+				completer_delims = " \t\n\"'><=;|&(" if completer else "\t"
+				cmd = input("\033[s\033[u", self.histfile, options.histlength, completer,
+					completer_delims)
 				if self.subtype == 'cmd':
 					assert len(cmd) <= MAX_CMD_PROMPT_LEN
 				#self.record(b"\n" + cmd.encode(), _input=True)
